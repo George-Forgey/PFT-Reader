@@ -2,8 +2,7 @@ import cv2
 import numpy as np
 import os
 
-# Assuming 'cropped_table' is the detected table from Phase 1
-# Load the cropped table if not already loaded
+# Path to the cropped table image
 cropped_table_path = os.path.join('output', 'cropped_table.png')
 cropped_table = cv2.imread(cropped_table_path)
 if cropped_table is None:
@@ -13,17 +12,18 @@ if cropped_table is None:
 table_height, table_width, _ = cropped_table.shape
 
 # Define the number of rows and columns
-num_rows = 28  # Example: Adjust based on your table
+num_rows = 29
 column_proportions = [
-    (0.005, 0.25),  
-    (0.26, 0.344), 
-    (0.344, 0.431),  
-    (0.435, 0.558),  
-    (0.561, 0.646),
-    (0.65, 0.729),
-    (0.78, 0.863),
-    (0.9, 0.995)
-]  
+    (0.000, 0.219),
+    (0.218, 0.305),
+    (0.295, 0.397),
+    (0.391, 0.473),
+    (0.468, 0.583),
+    (0.575, 0.655),
+    (0.647, 0.777),
+    (0.770, 0.896),
+    (0.888, 1.00)
+]
 
 # Calculate the row height
 row_height = table_height // num_rows
@@ -33,12 +33,12 @@ cells_output_dir = os.path.join('output', 'cells')
 os.makedirs(cells_output_dir, exist_ok=True)
 
 # Loop through rows and columns to segment each cell
-for row_idx in range(num_rows):
+for row_idx in range(num_rows+1):
     for col_idx, (start_prop, end_prop) in enumerate(column_proportions):
         # Calculate the x-coordinates for the current column
         start_x = int(start_prop * table_width)
         end_x = int(end_prop * table_width)
-        
+
         # Calculate the y-coordinates for the current row
         start_y = row_idx * row_height
         end_y = (row_idx + 1) * row_height

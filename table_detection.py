@@ -15,31 +15,14 @@ output_dir = 'output'
 os.makedirs(output_dir, exist_ok=True)
 
 # Load the template image
-template = cv2.imread(template_path, cv2.IMREAD_COLOR)
+template = cv2.imread(template_path, cv2.IMREAD_GRAYSCALE)
 if template is None:
     raise IOError(f"Template image not found at {template_path}")
 
 # Load the target image
-target_image = cv2.imread(target_path, cv2.IMREAD_COLOR)
+target_image = cv2.imread(target_path, cv2.IMREAD_GRAYSCALE)
 if target_image is None:
     raise IOError(f"Target image not found at {target_path}")
-
-# Convert images to grayscale
-template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
-target_gray = cv2.cvtColor(target_image, cv2.COLOR_BGR2GRAY)
-
-### Preprocessing (optional)
-
-# Apply Gaussian blur to reduce noise
-# template_gray = cv2.GaussianBlur(template_gray, (3, 3), 0)
-# target_gray = cv2.GaussianBlur(target_gray, (3, 3), 0)
-
-#use normalization to adjust for resolution discrepencies
-#code
-
-#use brightness normalization to adjust for different brightness
-#code
-
 
 # Initialize variables to keep track of the best match
 best_match_value = -1
@@ -47,21 +30,21 @@ best_match_location = None
 best_match_scale = 1.0
 best_template_size = (0, 0)
 
-# Define the scales to iterate over
-scale_factors = np.linspace(0.5, 1.5, 21)  # Adjust as needed
+# Define scales to test
+neighborhood_scales = np.arange(0.5, 1.5, 0.1)  # Additional scales for robustness
 
 # Iterate over the scales
-for scale in scale_factors:
+for scale in neighborhood_scales:
     # Resize the template image
-    template_resized = imutils.resize(template_gray, width=int(template_gray.shape[1] * scale))
+    template_resized = imutils.resize(template, width=int(template.shape[1] * scale))
     tH, tW = template_resized.shape[:2]
 
-    # Break if the resized template is larger than the target image
-    if tH > target_gray.shape[0] or tW > target_gray.shape[1]:
+    # Skip if the resized template is larger than the target image
+    if tH > target_image.shape[0] or tW > target_image.shape[1]:
         continue
 
     # Perform template matching
-    result = cv2.matchTemplate(target_gray, template_resized, cv2.TM_CCOEFF_NORMED)
+    result = cv2.matchTemplate(target_image, template_resized, cv2.TM_CCOEFF_NORMED)
     _, max_val, _, max_loc = cv2.minMaxLoc(result)
 
     # Update the best match if the current one is better
@@ -71,11 +54,11 @@ for scale in scale_factors:
         best_match_scale = scale
         best_template_size = (tW, tH)
 
-# Print for testing
+# Print the best match for testing
 print(f"Best match value: {best_match_value} at scale: {best_match_scale}")
 
 # Check if a match was found
-if best_match_value >= 0.4:  # Adjust threshold as needed
+if best_match_value >= 0.2:  # Adjust threshold as needed
     # Calculate the bounding box coordinates
     top_left = best_match_location
     tW, tH = best_template_size
@@ -91,17 +74,3 @@ if best_match_value >= 0.4:  # Adjust threshold as needed
     cv2.imwrite(os.path.join(output_dir, 'cropped_table.png'), cropped_table)
 else:
     print("No good match found.")
-    
-##########################
-##possible improvements for table detection:
-    #run tests on tables with different number values *at different resolutions, scales, and brightness*
-    #if the accuracy is not good enough i.e. < 80: 
-    #run grid search over preprocessing methods mentioned earlier (loop over different combinations of effects and intensities) to find best combination
-    #additionally, adjust the model type used in cv2.matchTemplate (currently = cv2.TM_CCOEFF_NORMED)
-    #if the scale adjustment doesnt fix the problem enough, could implement a binary-search-type algorithm that keeps adjusting scale until confidence converges at a set threshold
-    
-#optional:
-    #add algorithm to fix rotated/skewed images (likely not necessary)
-    #add a tool to let the user upload an image of their own annotated table manually
-
-##########################
