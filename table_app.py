@@ -2,9 +2,13 @@ import tkinter as tk
 from tkinter import ttk
 from tkinter import filedialog
 import json
-import pyautogui  # For capturing screenshots
+import pyautogui
 import os
 from PIL import Image, ImageTk
+
+from table_detector import detect_table 
+from cell_segmentation import segment_cells
+
 
 
 ##############################################################################
@@ -55,6 +59,14 @@ class App:
         self.titles_button = ttk.Button(master, text="Titles", command=self.open_titles_window)
         self.titles_button.pack(pady=5)
 
+        # -- NEW "Technical" button
+        self.technical_button = ttk.Button(master, text="Technical", command=self.open_technical_window)
+        self.technical_button.pack(pady=5)
+        
+        self.read_button = ttk.Button(master, text="Read", command=self.read_button_callback)
+        self.read_button.pack(pady=5)
+    
+    
     def run_button_callback(self):
         """
         Placeholder function for the "Run" button.
@@ -102,6 +114,35 @@ class App:
         Open the TitlesWindow so the user can edit row and column titles.
         """
         TitlesWindow()
+        
+    def open_technical_window(self):
+        TechnicalWindow()
+        
+    def read_button_callback(self):
+        """
+        1) Take a screenshot of the current screen, name it table_target.png
+        2) Call detect_table(...) to create cropped_table.png
+        3) Open a new window that displays an empty table skeleton.
+        """
+        
+        # Screenshot entire screen
+        screenshot = pyautogui.screenshot()
+        screenshot.save("table_target.png")
+        print("Screenshot saved to table_target.png")
+
+        # Call detect_table function
+        success = detect_table("table_template.png", "table_target.png", output_dir="output", threshold=0.2)
+        if success:
+            print("Table detection successful. Cropped table saved.")
+        else:
+            print("Table detection failed.")
+        
+            # 3) segment cells => output/cells/...
+        config_data = load_config()
+        segment_cells(config_data, cropped_table_path="output/cropped_table.png")
+
+        # Open the "ReadingWindow" to show the table skeleton
+        ReadingWindow()
 
 
 ##############################################################################
@@ -325,7 +366,14 @@ class TableConfigWindow:
 
         column_proportions.sort()
         row_proportions.sort()
-
+        
+        column_proportions.insert(0,0.00)
+        column_proportions.append(0.9999)
+        
+        row_proportions.insert(0,0.00)
+        row_proportions.append(0.9999)
+        
+        
         config_data = load_config()
 
         cols = self.col_var.get()
@@ -352,9 +400,10 @@ class TableConfigWindow:
 class TitlesWindow:
     """
     Allows the user to specify a title/name for each row and column.
-    We keep a hidden '' at row_titles[0] to represent the top-left cell,
-    but we do NOT display that extra entry in the UI. This way, if num_rows=4,
-    the user only sees 4 row title boxes (indexes 1..4 in row_titles).
+    For a table with num_rows in config, one of those rows is the top-left
+    "header row" shared with columns. Therefore, we only display (num_rows - 1)
+    editable row title fields. When saving, we insert "" at index 0 to keep
+    that hidden top-left cell in row_titles[0].
     """
     def __init__(self):
         self.win = tk.Toplevel()
@@ -370,20 +419,19 @@ class TitlesWindow:
         self.row_titles = self.config_data.get("row_titles", [])
         self.column_titles = self.config_data.get("column_titles", [])
 
-        # If row_titles is non-empty and starts with '', remove it temporarily
+        # If row_titles[0] = "", remove it (the hidden top-left entry),
+        # so we can let the user see only num_rows-1 editable titles.
         if self.row_titles and self.row_titles[0] == "":
-            self.row_titles.pop(0)
+            self.row_titles.pop(0)  # remove hidden blank
 
-        # Ensure row_titles has exactly self.num_rows items
-        if len(self.row_titles) < self.num_rows:
-            self.row_titles += [f"Row {i+1}" for i in range(len(self.row_titles), self.num_rows)]
-        self.row_titles = self.row_titles[: self.num_rows]
+        # Now, we ONLY need (num_rows - 1) actual row titles for the user to edit
+        needed = max(self.num_rows - 1, 0)  # guard if num_rows < 1
+        if len(self.row_titles) < needed:
+            # extend with placeholders if too short
+            self.row_titles += [f"Row {i+1}" for i in range(len(self.row_titles), needed)]
+        self.row_titles = self.row_titles[:needed]  # truncate if too long
 
-        # Now, re-insert '' at the front in the data model
-        # but we won't display that first entry in the UI.
-        self.row_titles.insert(0, "")
-
-        # Ensure column_titles has exactly self.num_cols items
+        # Ensure column_titles has exactly num_cols items
         if len(self.column_titles) < self.num_cols:
             self.column_titles += [f"Col {j+1}" for j in range(len(self.column_titles), self.num_cols)]
         self.column_titles = self.column_titles[: self.num_cols]
@@ -395,7 +443,6 @@ class TitlesWindow:
         canvas = tk.Canvas(container)
         canvas.pack(side="left", fill="both", expand=True)
 
-        # Scrollbars (vertical + horizontal)
         scrollbar_y = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
         scrollbar_y.pack(side="right", fill="y")
 
@@ -444,12 +491,11 @@ class TitlesWindow:
         row_label.grid(row=3, column=0, padx=5, pady=5, sticky="w")
 
         self.row_entries = []
-        # NOTE: self.row_titles[0] is the hidden blank for top-left;
-        # display indexes [1..num_rows] in the UI
-        for r in range(1, len(self.row_titles)):
-            entry_var = tk.StringVar(value=self.row_titles[r])
+        for i, row_title in enumerate(self.row_titles):
+            entry_var = tk.StringVar(value=row_title)
             entry = ttk.Entry(self.scrollable_frame, textvariable=entry_var, width=20)
-            entry.grid(row=3 + r, column=0, padx=5, pady=5, sticky="w")
+            # row=4+i ensures these appear below the label
+            entry.grid(row=4 + i, column=0, padx=5, pady=5, sticky="w")
             self.row_entries.append(entry)
 
         # Save button
@@ -467,19 +513,17 @@ class TitlesWindow:
         self.num_rows = self.entry_rows_var.get()
         self.num_cols = self.entry_cols_var.get()
 
-        # Remove hidden blank if present at front
+        # Remove hidden blank if present (index 0)
         if self.row_titles and self.row_titles[0] == "":
             self.row_titles.pop(0)
 
-        # Ensure row_titles is length self.num_rows
-        if len(self.row_titles) < self.num_rows:
-            self.row_titles += [f"Row {i+1}" for i in range(len(self.row_titles), self.num_rows)]
-        self.row_titles = self.row_titles[: self.num_rows]
+        # We want exactly (num_rows - 1) user-rows
+        needed = max(self.num_rows - 1, 0)
+        if len(self.row_titles) < needed:
+            self.row_titles += [f"Row {i+1}" for i in range(len(self.row_titles), needed)]
+        self.row_titles = self.row_titles[:needed]
 
-        # Insert hidden blank
-        self.row_titles.insert(0, "")
-
-        # Ensure column_titles is length self.num_cols
+        # Ensure column_titles is length num_cols
         if len(self.column_titles) < self.num_cols:
             self.column_titles += [f"Col {j+1}" for j in range(len(self.column_titles), self.num_cols)]
         self.column_titles = self.column_titles[: self.num_cols]
@@ -498,34 +542,141 @@ class TitlesWindow:
         row_label = tk.Label(self.scrollable_frame, text="Row Titles:")
         row_label.grid(row=3, column=0, padx=5, pady=5, sticky="w")
 
-        for r in range(1, len(self.row_titles)):
-            entry_var = tk.StringVar(value=self.row_titles[r])
+        for i, row_title in enumerate(self.row_titles):
+            entry_var = tk.StringVar(value=row_title)
             entry = ttk.Entry(self.scrollable_frame, textvariable=entry_var, width=20)
-            entry.grid(row=3 + r, column=0, padx=5, pady=5, sticky="w")
+            entry.grid(row=4 + i, column=0, padx=5, pady=5, sticky="w")
             self.row_entries.append(entry)
 
     def save_titles(self):
         """
         Save column_titles and row_titles into config.json.
-        We keep row_titles[0] = "" as the hidden top-left cell.
+        We'll insert "" at the beginning of the row_titles list
+        to account for the top-left "header" cell that belongs to both a row & a column.
         """
         new_column_titles = [e.get() for e in self.column_entries]
-        # new_row_titles must preserve index 0 as blank,
-        # so let's insert it after reading the user inputs.
         user_rows = [e.get() for e in self.row_entries]
 
-        # Combine hidden blank + user-labeled rows
+        # Insert hidden blank at front
         new_row_titles = [""]
         new_row_titles.extend(user_rows)
 
+        # Update config and save
         self.config_data["column_titles"] = new_column_titles
         self.config_data["row_titles"] = new_row_titles
 
         save_config(self.config_data)
         print("Titles saved to config.json")
         self.win.destroy()
+        
+##############################################################################
+# TechnicalWindow: For OCR-related preferences
+##############################################################################
+class TechnicalWindow:
+    def __init__(self):
+        self.win = tk.Toplevel()
+        self.win.title("Technical OCR Settings")
+
+        self.config_data = load_config()
+
+        # Existing (or default) config values
+        self.empty_rows = self.config_data.get("empty_rows", [1, 11, 12, 16, 17, 22, 23])
+        self.character_rows = self.config_data.get("character_rows", [10, 29])
+        self.columns_percent = self.config_data.get("columns_percent", [4, 7, 8])
+        self.decimal_precision = self.config_data.get("decimal_precision", 2)
+
+        # -- NEW: rows_percent
+        self.rows_percent = self.config_data.get("rows_percent", [2, 5, 9])  # default examples
+        rows_percent_str = ",".join(map(str, self.rows_percent))
+
+        # Convert existing lists to comma-separated strings for display
+        empty_rows_str = ",".join(map(str, self.empty_rows))
+        char_rows_str = ",".join(map(str, self.character_rows))
+        percent_cols_str = ",".join(map(str, self.columns_percent))
+
+        # Label + Entry: empty_rows
+        tk.Label(self.win, text="Empty Rows (comma-separated):").pack(anchor="w", padx=5, pady=2)
+        self.empty_rows_var = tk.StringVar(value=empty_rows_str)
+        ttk.Entry(self.win, textvariable=self.empty_rows_var, width=40).pack(padx=10, pady=2)
+
+        # Label + Entry: character_rows
+        tk.Label(self.win, text="Character Rows (comma-separated):").pack(anchor="w", padx=5, pady=2)
+        self.character_rows_var = tk.StringVar(value=char_rows_str)
+        ttk.Entry(self.win, textvariable=self.character_rows_var, width=40).pack(padx=10, pady=2)
+
+        # Label + Entry: columns_percent
+        tk.Label(self.win, text="Columns for % values (comma-separated):").pack(anchor="w", padx=5, pady=2)
+        self.columns_percent_var = tk.StringVar(value=percent_cols_str)
+        ttk.Entry(self.win, textvariable=self.columns_percent_var, width=40).pack(padx=10, pady=2)
+
+        # Label + Entry: rows_percent  (NEW)
+        tk.Label(self.win, text="Rows for % values (comma-separated):").pack(anchor="w", padx=5, pady=2)
+        self.rows_percent_var = tk.StringVar(value=rows_percent_str)
+        ttk.Entry(self.win, textvariable=self.rows_percent_var, width=40).pack(padx=10, pady=2)
+
+        # Spinbox: decimal_precision
+        tk.Label(self.win, text="Decimal Precision:").pack(anchor="w", padx=5, pady=2)
+        self.decimal_precision_var = tk.IntVar(value=self.decimal_precision)
+        ttk.Spinbox(self.win, from_=0, to=10, textvariable=self.decimal_precision_var, width=5).pack(padx=10, pady=2)
+
+        # Save button
+        save_btn = ttk.Button(self.win, text="Save Technical Settings", command=self.save_technical_settings)
+        save_btn.pack(pady=10)
+
+    def save_technical_settings(self):
+        """
+        Parse user input, update config, and save to config.json
+        """
+        def parse_int_list(s):
+            if not s.strip():
+                return []
+            return [int(x.strip()) for x in s.split(",") if x.strip().isdigit()]
+
+        # Parse each comma-separated string
+        new_empty_rows = parse_int_list(self.empty_rows_var.get())
+        new_char_rows = parse_int_list(self.character_rows_var.get())
+        new_percent_cols = parse_int_list(self.columns_percent_var.get())
+        new_rows_percent = parse_int_list(self.rows_percent_var.get())  # NEW
+        new_decimal_precision = self.decimal_precision_var.get()
+
+        self.config_data["empty_rows"] = new_empty_rows
+        self.config_data["character_rows"] = new_char_rows
+        self.config_data["columns_percent"] = new_percent_cols
+        self.config_data["rows_percent"] = new_rows_percent  # Store new field
+        self.config_data["decimal_precision"] = new_decimal_precision
+
+        save_config(self.config_data)
+        print("Technical settings saved to config.json")
+
+        self.win.destroy()
 
 
+##############################################################################
+# 3) Add a new class ReadingWindow to display the table skeleton
+##############################################################################
+
+class ReadingWindow:
+    """
+    Creates a new window that displays an empty table of size
+    num_rows x num_columns, as stored in config.json.
+    """
+    def __init__(self):
+        self.config_data = load_config()
+        self.num_rows = self.config_data.get("num_rows", 3)
+        self.num_cols = self.config_data.get("num_columns", 3)
+
+        self.win = tk.Toplevel()
+        self.win.title("Table Reading Results (Skeleton)")
+
+        # Create a frame to hold the table
+        table_frame = tk.Frame(self.win)
+        table_frame.pack(padx=10, pady=10)
+
+        # Build a simple table skeleton of labels
+        for r in range(self.num_rows):
+            for c in range(self.num_cols):
+                cell_label = tk.Label(table_frame, text=f"R{r}C{c}", borderwidth=1, relief="solid", width=10)
+                cell_label.grid(row=r, column=c, padx=1, pady=1)
 
 
 
