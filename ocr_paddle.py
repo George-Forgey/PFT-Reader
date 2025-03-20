@@ -1,209 +1,152 @@
-import cv2
-import numpy as np
 import os
+import json
 import csv
+import cv2
 from paddleocr import PaddleOCR
-import re
 
-# ==================================
-# 1. TABLE & OCR CONFIGURATIONS
-# ==================================
-
-
-column_titles = [
-    "Variable",    # 0
-    "Pre",         # 1
-    "ZScore",      # 2
-    "LLN",         # 3
-    "%PredPre",    # 4
-    "Post",        # 5
-    "ZScorePost",  # 6
-    "%PredPost",   # 7
-    "%ChangePost"  # 8
-]
-
-num_columns = 9
-num_rows = 30
-
-row_titles = [
-    "",             # 0
-    "",             # 1 (empty row)
-    "FVC",          # 2
-    "FEV1",         # 3
-    "FEV1/FVC",     # 4
-    "FEF 25%",      # 5
-    "FEF 75%",      # 6
-    "FEF 25-75%",   # 7
-    "FEF Max",      # 8
-    "FIVC",         # 9
-    "Test Grade",   #10
-    "",             #11 (empty row)
-    "",             #12 (empty row)
-    "SVC",          #13
-    "IC",           #14
-    "ERV",          #15
-    "",             #16 (empty row)
-    "",             #17 (empty row)
-    "TGV",          #18
-    "RV Pleth",     #19
-    "TLC Pleth",    #20
-    "RV/TLC Pleth", #21
-    "",             #22 (empty row)
-    "",             #23 (empty row)
-    "DLCOunc",      #24
-    "DLCOcor",      #25
-    "DL/VA",        #26
-    "VA",           #27
-    "Kco",          #28
-    "ATS Grades"    #29
-]
-
-empty_rows = [1, 11, 12, 16, 17, 22, 23]
-character_rows = [10, 29]   # Rows that contain text
-columns_percent = [4, 7, 8] # Columns that store % values
-
-# 2. PaddleOCR Initialization
-ocr = PaddleOCR(
-    use_angle_cls=False,
-    lang='en',
-    use_gpu=True
-)
-
-# 3. File / Directory Paths
-cells_output_dir = os.path.join('output', 'cells')
-csv_output_path = os.path.join('output', 'table_data_enhanced.csv')
-
-# 4. Main Table-Reading Logic
-with open(csv_output_path, mode='w', newline='', encoding='utf-8') as csv_file:
-    csv_writer = csv.writer(csv_file)
-    csv_writer.writerow(column_titles)  # Write 9 column headers
-
-    for row_idx in range(num_rows):
+def perform_ocr(config_path="config.json",
+                cells_output_dir=os.path.join('output', 'cells'),
+                csv_output_path=os.path.join('output', 'table_data.csv')):
+    """
+    Loops over the cells folder, performs OCR on non-title cells,
+    post-processes the numeric values, applies sign corrections, and
+    writes the complete table (including the title row and column) to a CSV.
+    
+    Assumptions:
+      - The cells folder contains the entire grid (including title row (row 0)
+        and title column (column 0)).
+      - OCR is not run on title cells; these are provided via config.
+      - The CSV's first row is the column_titles list.
+      - For each subsequent row, the first cell is taken from row_titles.
+      - The top-left cell (0,0) is the first entry from column_titles.
+      
+    Post-processing:
+      1. Decimal formatting:
+         - For most cells: remove any existing decimal point and then insert a new decimal point
+           two characters from the end (to yield two-decimal precision).
+         - Exception: cells at (row 10, col 1) and (row 29, col 1) are left unmodified.
+         - Exception: cells in columns 4, 7, and 8 (1-indexed) are percent values and should have
+           no decimals (simply remove any periods).
+      
+      2. Sign correction for signed-data:
+         - For column 2 (i.e. CSV index 2): examine the corresponding cell in column 4 (index 4);
+           if that value is >= 100, prefix a '+' to the cell in column 2; otherwise, prefix a '-'.
+         - For column 6 (index 6): examine the corresponding cell in column 7 (index 7);
+           if that value is >= 100, prefix a '+'; else, '-'.
+         - For column 8 (index 8): compare the values in column 5 (index 5) and column 1 (index 1);
+           if (value in col5 - value in col1) is >= 0, prefix a '+', else prefix a '-'.
+    """
+    # Load configuration.
+    with open(config_path, "r") as f:
+        config = json.load(f)
+    
+    total_rows = config.get("num_rows", 0)         # Total rows (including title row)
+    total_columns = config.get("num_columns", 0)     # Total columns (including title column)
+    column_titles = config.get("column_titles", [])
+    row_titles = config.get("row_titles", [])
+    
+    # Initialize OCR engine.
+    ocr = PaddleOCR(use_angle_cls=False, lang='en', use_gpu=True)
+    
+    # Prepare CSV data as a 2D list.
+    # First row: use the column_titles list.
+    csv_data = [column_titles]
+    
+    # Process each non-title row.
+    for i in range(1, total_rows):
         row_data = []
-
-        # Row title
-        row_title = row_titles[row_idx] if row_idx < len(row_titles) else ""
-        row_data.append(row_title)
-
-        # If empty row, fill with blanks
-        if row_idx in empty_rows:
-            row_data.extend([""] * (num_columns - 1))
-            csv_writer.writerow(row_data)
-            continue
-
-        # Check if this row should contain character data
-        is_char_row = row_idx in character_rows
-
-        # Temporary storage for columns in this row
-        # We'll fill row_data fully, then fix signs afterwards
-        numeric_values = ["" for _ in range(num_columns - 1)]  # we already placed row_title at index 0
-        for col_idx in range(1, num_columns):
-            cell_filename = f'cell_row{row_idx}_col{col_idx}.png'
+        # First cell of each row: row title.
+        row_data.append(row_titles[i] if i < len(row_titles) else "")
+        # Process OCR for each non-title cell.
+        for j in range(1, total_columns):
+            cell_filename = f"cell_row{i}_col{j}.png"
             cell_path = os.path.join(cells_output_dir, cell_filename)
-
-            # Read as grayscale
             cell_image = cv2.imread(cell_path, cv2.IMREAD_GRAYSCALE)
             if cell_image is None:
                 print(f"Warning: Cell image not found at {cell_path}")
-                numeric_values[col_idx - 1] = ""
+                row_data.append("")
                 continue
-
-            # Single-line OCR (no detection, no angle classification)
             result = ocr.ocr(cell_image, det=False, cls=False)
-            cell_text = ""
-
-            if result and len(result) > 0:
-                raw_text_tuple = result[0][0]   # (text, confidence)
-                raw_text = raw_text_tuple[0]   # just the text
-
-                if not is_char_row:
-                    # We want only digits for numeric columns
-                    # ignoring signs and decimals for now
-                    # e.g. "1234" => 12.34 eventually
-                    matches = re.findall(r'\d+', raw_text)
-                    if matches:
-                        concatenated = "".join(matches)
-
-                        # Attempt to convert to int and optionally shift decimal
-                        try:
-                            integer_val = int(concatenated)
-
-                            # If this column is not a % column
-                            if col_idx not in columns_percent:
-                                # Insert decimal by dividing by 100
-                                decimal_val = integer_val / 100.0
-                                cell_text = f"{decimal_val:.2f}"
-                            else:
-                                # For % columns, keep as integer string
-                                cell_text = str(integer_val)
-                        except ValueError:
-                            cell_text = ""
+            text = result[0][0][0] if result and len(result) > 0 else ""
+            
+            # --- Decimal post-processing ---
+            # Exceptions: do not modify cell if it is at (row 10, col 1) or (row 29, col 1)
+            # (Note: i and j are the grid indices where i>=1 and j>=1)
+            if text != "":
+                if (i == 10 and j == 1) or (i == 29 and j == 1):
+                    processed = text
+                # For percent-value cells (columns 4, 7, 8; i.e. j in {4, 7, 8}), remove any decimals.
+                elif j in {4, 7, 8}:
+                    processed = text.replace('.', '')
                 else:
-                    # If character row => keep entire recognized text
-                    cell_text = raw_text
+                    # Remove any existing decimal point.
+                    digits = text.replace('.', '')
+                    # Ensure there are at least three digits to allow a decimal insertion.
+                    if len(digits) < 3:
+                        digits = digits.zfill(3)
+                    processed = digits[:-2] + '.' + digits[-2:]
+            else:
+                processed = ""
+            row_data.append(processed)
+        csv_data.append(row_data)
+    
+    # --- Sign correction ---
+    # The signed-data columns are 2, 6, 8 (1-indexed), which correspond to indices 2, 6, 8 in each data row.
+    # Process each data row (skip header row).
+    for r in range(1, len(csv_data)):
+        row = csv_data[r]
+        # For column 2: check column 4.
+        try:
+            cell_val = row[2]
+            ref_val = row[4]
+            if cell_val and ref_val:
+                # Remove any existing sign.
+                cell_val = cell_val.lstrip("+-")
+                num_cell = float(cell_val)
+                num_ref = float(ref_val)
+                if num_ref >= 100:
+                    row[2] = f"+{num_cell:.2f}"
+                else:
+                    row[2] = f"-{num_cell:.2f}"
+        except Exception:
+            pass
+        
+        # For column 6: check column 7.
+        try:
+            cell_val = row[6]
+            ref_val = row[7]
+            if cell_val and ref_val:
+                cell_val = cell_val.lstrip("+-")
+                num_cell = float(cell_val)
+                num_ref = float(ref_val)
+                if num_ref >= 100:
+                    row[6] = f"+{num_cell:.2f}"
+                else:
+                    row[6] = f"-{num_cell:.2f}"
+        except Exception:
+            pass
+        
+        # For column 8: compare column 5 and column 1.
+        try:
+            cell_val = row[8]
+            pre_val = row[1]
+            post_val = row[5]
+            if cell_val and pre_val and post_val:
+                cell_val = cell_val.lstrip("+-")
+                num_cell = float(cell_val)
+                num_pre = float(pre_val)
+                num_post = float(post_val)
+                if (num_post - num_pre) >= 0:
+                    row[8] = f"+{num_cell:.2f}"
+                else:
+                    row[8] = f"-{num_cell:.2f}"
+        except Exception:
+            pass
 
-            numeric_values[col_idx - 1] = cell_text
-
-        # Now, row_data = [row_title], numeric_values = [col1..col8]
-        # Combine them
-        row_data.extend(numeric_values)
-
-        # 5. Determine signs for columns 2 (ZScore), 6 (ZScorePost), 8 (%ChangePost)
-        # Only do this if row_data is numeric-based (not char_row)
-        # But user wants sign logic even if not numeric row? => logic says no
-        if not is_char_row:
-            try:
-                # a) Column 2 sign => based on col4 > 100
-                # row_data indices: 0 is row_title, so col2 => row_data[2], col4 => row_data[4]
-                zscore_val = row_data[2]
-                percent_pre = row_data[4]  # e.g. 101 => sign = '+', else '-'
-                if zscore_val and percent_pre:
-                    # Convert percent_pre to float
-                    pp_float = float(percent_pre)
-                    z_float = float(zscore_val)
-                    if pp_float > 100:
-                        # Ensure zscore is positive
-                        row_data[2] = f"+{abs(z_float):.2f}"
-                    else:
-                        # Ensure zscore is negative
-                        row_data[2] = f"-{abs(z_float):.2f}"
-            except ValueError:
-                pass
-
-            try:
-                # b) Column 6 sign => based on col7 > 100
-                # col6 => row_data[6], col7 => row_data[7]
-                zscore_post_val = row_data[6]
-                percent_post = row_data[7]
-                if zscore_post_val and percent_post:
-                    pp_float = float(percent_post)
-                    z_float = float(zscore_post_val)
-                    if pp_float > 100:
-                        row_data[6] = f"+{abs(z_float):.2f}"
-                    else:
-                        row_data[6] = f"-{abs(z_float):.2f}"
-            except ValueError:
-                pass
-
-            try:
-                # c) Column 8 sign => based on post (col5) - pre (col1)
-                # col8 => row_data[8], col5 => row_data[5], col1 => row_data[1]
-                change_val = row_data[8]  # e.g. '12' or '12.34' from above logic
-                pre_str = row_data[1]
-                post_str = row_data[5]
-                if change_val and pre_str and post_str:
-                    pre_f = float(pre_str)
-                    post_f = float(post_str)
-                    # If post-pre > 0 => sign is '+', else '-'
-                    change_f = float(change_val)
-                    if (post_f - pre_f) > 0:
-                        row_data[8] = f"+{abs(change_f):.2f}"
-                    else:
-                        row_data[8] = f"-{abs(change_f):.2f}"
-            except ValueError:
-                pass
-
-        # Write final row_data
-        csv_writer.writerow(row_data)
-
-print(f"OCR results saved to {csv_output_path}")
+    # Write the complete CSV data to file.
+    with open(csv_output_path, "w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerows(csv_data)
+    
+    print(f"OCR results with post-processing, sign corrections, and titles saved to {csv_output_path}")
+    return csv_output_path
