@@ -11,14 +11,6 @@ def perform_ocr(config_path="config.json",
     Loops over the cells folder, performs OCR on non-title cells,
     post-processes the numeric values, applies sign corrections, and
     writes the complete table (including the title row and column) to a CSV.
-    
-    Assumptions:
-      - The cells folder contains the entire grid (including title row (row 0)
-        and title column (column 0)).
-      - OCR is not run on title cells; these are provided via config.
-      - The CSV's first row is the column_titles list.
-      - For each subsequent row, the first cell is taken from row_titles.
-      - The top-left cell (0,0) is the first entry from column_titles.
       
     Post-processing:
       1. Decimal formatting:
